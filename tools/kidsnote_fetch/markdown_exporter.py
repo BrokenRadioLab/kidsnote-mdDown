@@ -47,6 +47,18 @@ def _date_from_report(report: dict[str, Any]) -> str:
     return datetime.now().date().isoformat()
 
 
+def _unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for idx in range(2, 1000):
+        candidate = path.with_name(f"{stem} ({idx}){suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Could not find a unique filename for {path}")
+
+
 def _first_attachment_url(obj: dict[str, Any]) -> str:
     for key in IMAGE_URL_KEYS:
         url = obj.get(key)
@@ -161,10 +173,16 @@ class MarkdownExporter:
         ym_dir = self._child_root(child_name) / date[:4] / date[5:7]
         ym_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"{date}_{report_id}_알림장.md"
+        filename = f"{date}_알림장.md"
         note_path = ym_dir / filename
         if note_path.exists() and not force:
-            return {"path": str(note_path), "images": 0, "files": 0, "skipped": True}
+            try:
+                existing = note_path.read_text(encoding="utf-8", errors="ignore")[:1200]
+            except Exception:
+                existing = ""
+            if re.search(rf"^report_id:\s*{report_id}\s*$", existing, re.MULTILINE):
+                return {"path": str(note_path), "images": 0, "files": 0, "skipped": True}
+            note_path = _unique_path(note_path)
 
         asset_dir = ym_dir / "assets"
         asset_dir.mkdir(parents=True, exist_ok=True)
@@ -273,7 +291,7 @@ class MarkdownExporter:
         author = (report.get("author") or {}).get("type") or ""
         child_name = report.get("child_name") or ""
         weather = report.get("weather") or ""
-        title = f"{date} Kidsnote {report_id}"
+        title = f"{date} 알림장"
         body = (report.get("content") or "").strip()
 
         lines = [
