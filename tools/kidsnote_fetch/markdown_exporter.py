@@ -304,13 +304,13 @@ class MarkdownExporter:
         if image_links:
             lines.extend(["## Photos", ""])
             for path in image_links:
-                lines.append(f"![[assets/{path.name}]]")
+                lines.append(f"![{path.name}](assets/{path.name})")
             lines.append("")
 
         if file_links:
             lines.extend(["## Attachments", ""])
             for path in file_links:
-                lines.append(f"- [[assets/{path.name}]]")
+                lines.append(f"- [{path.name}](assets/{path.name})")
             lines.append("")
 
         return "\n".join(lines).rstrip() + "\n"
