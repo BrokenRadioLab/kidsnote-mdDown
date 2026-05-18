@@ -24,6 +24,28 @@ _LOGGER = logging.getLogger(__name__)
 IMAGE_URL_KEYS = ("original", "url", "src", "high", "high_resize", "large_resize")
 MAX_IMAGE_SIDE = 1920
 
+WEATHER_DISPLAY = {
+    "sunny": ("☀️", "맑음"),
+    "partly_cloudy": ("⛅", "구름 조금"),
+    "mostly_cloudy": ("🌥️", "구름 많음"),
+    "overcast": ("☁️", "흐림"),
+    "cloudy": ("☁️", "흐림"),
+    "fog": ("🌫️", "안개"),
+    "foggy": ("🌫️", "안개"),
+    "rain": ("🌧️", "비"),
+    "rainy": ("🌧️", "비"),
+    "sunny_after_rain": ("🌦️", "비 온 뒤 맑음"),
+    "snow": ("❄️", "눈"),
+    "snowy": ("❄️", "눈"),
+    "yellow_sand": ("😷", "황사"),
+    "thunderstorm": ("⛈️", "천둥번개"),
+    "stormy": ("⛈️", "폭풍"),
+    "mixed_rain_snow": ("🌨️", "진눈깨비"),
+    "windy": ("🌬️", "바람"),
+    "hot": ("🔥", "더움"),
+    "cold": ("🧊", "추움"),
+}
+
 
 def _safe_filename(value: str, fallback: str = "note") -> str:
     value = re.sub(r"[\\/:*?\"<>|#^\[\]]+", " ", value or "").strip()
@@ -65,6 +87,13 @@ def _first_attachment_url(obj: dict[str, Any]) -> str:
         if url:
             return str(url)
     return ""
+
+
+def _weather_text(code: str) -> str:
+    if not code:
+        return ""
+    emoji, label = WEATHER_DISPLAY.get(code, ("🌤️", code))
+    return f"{emoji} 날씨: {label}"
 
 
 def _strip_gps(raw: bytes) -> bytes:
@@ -310,14 +339,12 @@ class MarkdownExporter:
             f"# {title}",
             "",
         ]
+        weather_text = _weather_text(weather)
+        if weather_text:
+            lines.extend([f"> {weather_text}", ""])
         if summary:
             lines.extend(["## Summary", "", summary.strip(), ""])
         lines.extend(["## Original", "", body or "(empty)", ""])
-
-        if attached_menu:
-            menu_text = self._menu_text(attached_menu)
-            if menu_text:
-                lines.extend(["## Menu", "", menu_text, ""])
 
         if image_links:
             lines.extend(["## Photos", ""])
@@ -330,6 +357,11 @@ class MarkdownExporter:
             for path in file_links:
                 lines.append(f"- [{path.name}](assets/{path.name})")
             lines.append("")
+
+        if attached_menu:
+            menu_text = self._menu_text(attached_menu)
+            if menu_text:
+                lines.extend(["## Menu", "", menu_text, ""])
 
         return "\n".join(lines).rstrip() + "\n"
 
