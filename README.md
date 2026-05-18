@@ -964,6 +964,21 @@ WARNING video 5월_운동회.mp4 is 12340567 bytes > 5000000 cap; skipping (Noti
 
 > 💡 cron 자동 트리거를 끄고 수동으로만 돌리고 싶으면: Actions 탭 → 워크플로 → `⋯` → `Disable workflow`.
 
+### 노션에 새 알림장이 안 들어와요 (며칠째 멈춤)
+
+가장 흔한 원인은 **키즈노트 sessionid 쿠키 만료**(약 30일마다). 확인 + 해결:
+
+1. **GitHub 메일 확인** — 가입 이메일에 `Run failed` 알림이 와 있는지
+2. **Actions 탭 확인** — fork repo → `Actions` 탭 → 최근 run이 **빨간색 ❌**인지
+3. 실패한 run 클릭 → 로그에 다음 중 하나가 보이면 쿠키 문제:
+   - `401 Unauthorized` (키즈노트)
+   - `KIDSNOTE_SESSION_COOKIE missing or expired`
+4. 해결 = [쿠키 만료 시](#쿠키-만료-시-약-30일마다) 섹션 절차 (3분)
+
+쿠키 문제가 아닌데도 안 들어오면:
+- 오늘 어린이집 휴무일이라 새 글이 없을 수도 있음
+- Actions 로그에서 `345 total fetched, 345 already in DB (skip), 0 to publish` 보이면 정상 (그냥 새 글이 아직 안 올라온 것)
+
 ### 내 데이터가 안전한가요?
 
 - 모든 비밀값은 **GitHub Secrets**로 암호화 저장 (코드 어디에도 평문 등장 X)
