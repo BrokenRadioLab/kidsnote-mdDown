@@ -635,7 +635,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.export_markdown and not args.publish_to_notion and args.all_children:
         assert md_exporter is not None
 
-        def _reports_for_markdown_child(target_child: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        def _center_id_for_child(target_child: dict[str, Any]) -> int | None:
+            enr_child = target_child.get("enrollment")
+            if isinstance(enr_child, list) and enr_child:
+                return enr_child[0].get("center_id") or enr_child[0].get("center")
+            if isinstance(enr_child, dict):
+                return enr_child.get("center_id") or enr_child.get("center")
+            return None
+
+        def _reports_for_markdown_child(target_child: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], int | None]:
             child_reports = _list_reports(sess, int(target_child["id"]))
             if args.monthly_sample:
                 seen_months: set[str] = set()
@@ -666,12 +674,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
 
             menus_for_child: dict[str, dict[str, Any]] = {}
-            enr_child = target_child.get("enrollment")
-            center_id_child: int | None = None
-            if isinstance(enr_child, list) and enr_child:
-                center_id_child = enr_child[0].get("center_id") or enr_child[0].get("center")
-            elif isinstance(enr_child, dict):
-                center_id_child = enr_child.get("center_id") or enr_child.get("center")
+            center_id_child = _center_id_for_child(target_child)
             if not args.no_menus and center_id_child:
                 try:
                     menus = _list_menus(sess, int(center_id_child))
@@ -685,12 +688,14 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 except Exception as e:
                     _LOGGER.warning("Markdown menu pre-fetch failed for child=%s: %s", target_child.get("name"), e)
-            return enriched_child_reports, menus_for_child
+            return enriched_child_reports, menus_for_child, center_id_child
 
         total_exported = 0
         total_skipped = 0
+        total_notice_exported = 0
+        total_notice_skipped = 0
         for child in children:
-            reports_for_child, menus_for_child = _reports_for_markdown_child(child)
+            reports_for_child, menus_for_child, center_id_child = _reports_for_markdown_child(child)
             child_name = child.get("name") or ""
             exported = 0
             skipped = 0
@@ -736,9 +741,45 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as e:
                     _LOGGER.warning("Markdown milestones failed for child=%s: %s", child_name, e)
 
+            if not args.no_notices and center_id_child:
+                try:
+                    notices_for_child = _list_notices(sess, int(center_id_child))
+                    if args.limit:
+                        notices_for_child = notices_for_child[: args.limit]
+                    notice_exported = 0
+                    notice_skipped = 0
+                    _LOGGER.info(
+                        "Markdown child=%s: fetched %d notices",
+                        child_name, len(notices_for_child),
+                    )
+                    for notice in notices_for_child:
+                        try:
+                            res = md_exporter.export_notice(
+                                notice, sess, child_name=child_name,
+                                force=args.force_refresh,
+                            )
+                            if res.get("skipped"):
+                                notice_skipped += 1
+                            else:
+                                notice_exported += 1
+                        except Exception as e:
+                            _LOGGER.warning(
+                                "Markdown notice export FAILED child=%s id=%s: %s",
+                                child_name, notice.get("id"), e,
+                            )
+                    total_notice_exported += notice_exported
+                    total_notice_skipped += notice_skipped
+                    _LOGGER.info(
+                        "Markdown notice export child=%s DONE: %d new notes, %d already existed",
+                        child_name, notice_exported, notice_skipped,
+                    )
+                except Exception as e:
+                    _LOGGER.warning("Markdown notice fetch failed for child=%s: %s", child_name, e)
+
         _LOGGER.info(
-            "Markdown all-children export DONE: %d new notes, %d already existed",
-            total_exported, total_skipped,
+            "Markdown all-children export DONE: %d report notes, %d report skips, "
+            "%d notice notes, %d notice skips",
+            total_exported, total_skipped, total_notice_exported, total_notice_skipped,
         )
         return 0
 

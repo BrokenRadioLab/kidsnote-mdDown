@@ -46,6 +46,12 @@ WEATHER_DISPLAY = {
     "cold": ("🧊", "추움"),
 }
 
+AUTHOR_FILE_LABELS = {
+    "teacher": "교사알림장",
+    "parent": "부모알림장",
+    "admin": "공지알림장",
+}
+
 
 def _safe_filename(value: str, fallback: str = "note") -> str:
     value = re.sub(r"[\\/:*?\"<>|#^\[\]]+", " ", value or "").strip()
@@ -81,6 +87,21 @@ def _unique_path(path: Path) -> Path:
     raise RuntimeError(f"Could not find a unique filename for {path}")
 
 
+def _read_report_id(path: Path) -> int | None:
+    return _read_frontmatter_id(path, "report_id")
+
+
+def _read_frontmatter_id(path: Path, key: str) -> int | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")[:1200]
+    except Exception:
+        return None
+    match = re.search(rf"^{re.escape(key)}:\s*(\d+)\s*$", text, re.MULTILINE)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
 def _first_attachment_url(obj: dict[str, Any]) -> str:
     for key in IMAGE_URL_KEYS:
         url = obj.get(key)
@@ -94,6 +115,11 @@ def _weather_text(code: str) -> str:
         return ""
     emoji, label = WEATHER_DISPLAY.get(code, ("🌤️", code))
     return f"{emoji} 날씨: {label}"
+
+
+def _author_file_label(report: dict[str, Any]) -> str:
+    author_type = (report.get("author") or {}).get("type") or ""
+    return AUTHOR_FILE_LABELS.get(author_type, "알림장")
 
 
 def _strip_gps(raw: bytes) -> bytes:
@@ -174,18 +200,35 @@ class MarkdownExporter:
     def _dashboards_dir(self, child_name: str) -> Path:
         return self._child_root(child_name) / "_index"
 
+    def _notice_root(self, child_name: str) -> Path:
+        return self._child_root(child_name) / "공지사항"
+
     def existing_report_ids(self) -> set[int]:
         self.ensure_dirs()
         out: set[int] = set()
         for path in self.kidsnote_dir.rglob("*.md"):
-            try:
-                text = path.read_text(encoding="utf-8", errors="ignore")[:1200]
-            except Exception:
-                continue
-            match = re.search(r"^report_id:\s*(\d+)\s*$", text, re.MULTILINE)
-            if match:
-                out.add(int(match.group(1)))
+            report_id = _read_report_id(path)
+            if report_id is not None:
+                out.add(report_id)
         return out
+
+    def _existing_note_paths(self, child_name: str, report_id: int) -> list[Path]:
+        child_root = self._child_root(child_name)
+        if not child_root.exists():
+            return []
+        return [
+            path for path in child_root.rglob("*.md")
+            if _read_report_id(path) == report_id
+        ]
+
+    def _existing_notice_paths(self, child_name: str, notice_id: int) -> list[Path]:
+        notice_root = self._notice_root(child_name)
+        if not notice_root.exists():
+            return []
+        return [
+            path for path in notice_root.rglob("*.md")
+            if _read_frontmatter_id(path, "notice_id") == notice_id
+        ]
 
     def export_report(
         self,
@@ -202,15 +245,19 @@ class MarkdownExporter:
         ym_dir = self._child_root(child_name) / date[:4] / date[5:7]
         ym_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"{date}_알림장.md"
+        filename = f"{date}_{_author_file_label(report)}.md"
         note_path = ym_dir / filename
-        if note_path.exists() and not force:
-            try:
-                existing = note_path.read_text(encoding="utf-8", errors="ignore")[:1200]
-            except Exception:
-                existing = ""
-            if re.search(rf"^report_id:\s*{report_id}\s*$", existing, re.MULTILINE):
-                return {"path": str(note_path), "images": 0, "files": 0, "skipped": True}
+
+        existing_note_paths = self._existing_note_paths(child_name, report_id)
+        if existing_note_paths and not force:
+            return {
+                "path": str(existing_note_paths[0]),
+                "images": 0,
+                "files": 0,
+                "skipped": True,
+            }
+
+        if note_path.exists() and note_path not in existing_note_paths:
             note_path = _unique_path(note_path)
 
         asset_dir = ym_dir / "assets"
@@ -227,7 +274,59 @@ class MarkdownExporter:
             ),
             encoding="utf-8",
         )
+        for old_path in existing_note_paths:
+            if old_path != note_path and old_path.exists():
+                old_path.unlink()
         _LOGGER.info("Markdown +1 id=%s -> %s", report_id, note_path)
+        return {
+            "path": str(note_path),
+            "images": len(image_links),
+            "files": len(file_links),
+            "skipped": False,
+        }
+
+    def export_notice(
+        self,
+        notice: dict[str, Any],
+        kidsnote_sess: requests.Session,
+        *,
+        child_name: str,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        self.ensure_dirs()
+        notice_id = int(notice["id"])
+        date = _date_from_report(notice)
+        ym_dir = self._notice_root(child_name) / date[:4] / date[5:7]
+        ym_dir.mkdir(parents=True, exist_ok=True)
+
+        title = _safe_filename((notice.get("title") or "공지사항").strip(), "공지사항")
+        note_path = ym_dir / f"{date}_{title}.md"
+
+        existing_note_paths = self._existing_notice_paths(child_name, notice_id)
+        if existing_note_paths and not force:
+            return {
+                "path": str(existing_note_paths[0]),
+                "images": 0,
+                "files": 0,
+                "skipped": True,
+            }
+
+        if note_path.exists() and note_path not in existing_note_paths:
+            note_path = _unique_path(note_path)
+
+        asset_dir = ym_dir / "assets"
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        image_links = self._download_images(notice, kidsnote_sess, asset_dir)
+        file_links = self._download_blobs(notice, kidsnote_sess, asset_dir)
+
+        note_path.write_text(
+            self._render_notice_markdown(notice, image_links, file_links),
+            encoding="utf-8",
+        )
+        for old_path in existing_note_paths:
+            if old_path != note_path and old_path.exists():
+                old_path.unlink()
+        _LOGGER.info("Markdown notice +1 id=%s -> %s", notice_id, note_path)
         return {
             "path": str(note_path),
             "images": len(image_links),
@@ -320,7 +419,6 @@ class MarkdownExporter:
         author = (report.get("author") or {}).get("type") or ""
         child_name = report.get("child_name") or ""
         weather = report.get("weather") or ""
-        title = f"{date} 알림장"
         body = (report.get("content") or "").strip()
 
         lines = [
@@ -335,8 +433,6 @@ class MarkdownExporter:
             "  - kidsnote",
             "  - alimnota",
             "---",
-            "",
-            f"# {title}",
             "",
         ]
         weather_text = _weather_text(weather)
@@ -362,6 +458,55 @@ class MarkdownExporter:
             menu_text = self._menu_text(attached_menu)
             if menu_text:
                 lines.extend(["## Menu", "", menu_text, ""])
+
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _render_notice_markdown(
+        self,
+        notice: dict[str, Any],
+        image_links: list[Path],
+        file_links: list[Path],
+    ) -> str:
+        notice_id = int(notice["id"])
+        date = _date_from_report(notice)
+        title = (notice.get("title") or "공지사항").strip()
+        body = (notice.get("content") or "").strip()
+        author_name = notice.get("author_name") or ""
+        lines = [
+            "---",
+            "type: kidsnote-notice",
+            f"notice_id: {notice_id}",
+            f'date: "{_frontmatter_string(date)}"',
+            f'title: "{_frontmatter_string(title)}"',
+            f'author: "{_frontmatter_string(author_name)}"',
+            "tags:",
+            "  - kidsnote",
+            "  - notice",
+            "---",
+            "",
+        ]
+        meta_bits = []
+        if author_name:
+            meta_bits.append(f"작성: {author_name}")
+        if notice.get("is_center_notice"):
+            meta_bits.append("센터 공지")
+        if notice.get("is_always_on_top"):
+            meta_bits.append("상단 고정")
+        if meta_bits:
+            lines.extend(["> " + " · ".join(meta_bits), ""])
+        lines.extend(["## Notice", "", body or "(empty)", ""])
+
+        if image_links:
+            lines.extend(["## Photos", ""])
+            for path in image_links:
+                lines.append(f"![{path.name}](assets/{path.name})")
+            lines.append("")
+
+        if file_links:
+            lines.extend(["## Attachments", ""])
+            for path in file_links:
+                lines.append(f"- [{path.name}](assets/{path.name})")
+            lines.append("")
 
         return "\n".join(lines).rstrip() + "\n"
 
