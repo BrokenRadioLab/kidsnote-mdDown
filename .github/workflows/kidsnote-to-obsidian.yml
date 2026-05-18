@@ -1,0 +1,130 @@
+# Kidsnote -> Obsidian Markdown export
+#
+# The workflow relies on a `sessionid` cookie the operator extracts manually
+# from a logged-in browser session and stores in the KIDSNOTE_SESSION_COOKIE
+# repository secret. The output is uploaded as a downloadable GitHub Actions
+# artifact named `kidsnote-obsidian-export`.
+
+name: Kidsnote -> Obsidian Markdown
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Only export the N most recent reports (leave empty for all)"
+        required: false
+        default: ""
+      monthly_sample:
+        description: "Unit-test mode: pick one report per month for breadth coverage"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      force_refresh:
+        description: "Overwrite existing Markdown notes and regenerate LLM dashboards"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+  schedule:
+    - cron: "15 */4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kidsnote-to-obsidian
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install fetcher deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tools/kidsnote_fetch/requirements.txt
+
+      - name: Restore previous export cache
+        id: export-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: obsidian-export
+          key: obsidian-export-${{ github.run_id }}
+          restore-keys: |
+            obsidian-export-
+
+      - name: Cache Ollama models
+        id: ollama-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama
+          key: ollama-llama3.1-8b-v1
+
+      - name: Install Ollama + pull model
+        run: |
+          if ! command -v ollama >/dev/null 2>&1; then
+            curl -fsSL https://ollama.com/install.sh | sh
+          fi
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..30}; do
+            if curl -s http://localhost:11434/api/version >/dev/null 2>&1; then
+              echo "ollama ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          ollama pull llama3.1:8b
+
+      - name: Export Kidsnote -> Markdown
+        env:
+          KIDSNOTE_SESSION_COOKIE: ${{ secrets.KIDSNOTE_SESSION_COOKIE }}
+          OLLAMA_HOST: "http://localhost:11434"
+          OLLAMA_MODEL: "llama3.1:8b"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -eu
+          ARGS=( "--auth-mode" "session-cookie-env" "--export-markdown" "--all-children" "--no-local-save" "--backup-root" "obsidian-export" )
+          if [ -n "${{ inputs.limit }}" ]; then
+            ARGS+=( "--limit" "${{ inputs.limit }}" )
+          fi
+          if [ "${{ inputs.monthly_sample }}" = "true" ]; then
+            ARGS+=( "--monthly-sample" )
+          fi
+          if [ "${{ inputs.force_refresh }}" = "true" ]; then
+            ARGS+=( "--force-refresh" )
+          fi
+          python tools/kidsnote_fetch/fetch.py "${ARGS[@]}"
+
+      - name: Upload Obsidian Markdown artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kidsnote-obsidian-export
+          path: obsidian-export
+          retention-days: 30
+
+      - name: Save export cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: obsidian-export
+          key: obsidian-export-${{ github.run_id }}
+
+      - name: Verify required secrets were present
+        if: failure()
+        env:
+          KIDSNOTE_SESSION_COOKIE: ${{ secrets.KIDSNOTE_SESSION_COOKIE }}
+        run: |
+          if [ -z "${KIDSNOTE_SESSION_COOKIE:-}" ]; then
+            echo "::error::repo secret 'KIDSNOTE_SESSION_COOKIE' is empty or unset"
+          fi

@@ -502,6 +502,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="Mirror each new report to a Notion database. "
                          "Reads NOTION_TOKEN + NOTION_DATABASE_ID from .env or "
                          "process env (whichever is set).")
+    ap.add_argument("--export-markdown", action="store_true",
+                    help="Export reports as Obsidian-friendly Markdown files.")
+    ap.add_argument("--markdown-root", type=Path,
+                    help="Folder where Obsidian Markdown notes and assets will land. "
+                         "Defaults to --backup-root when omitted.")
+    ap.add_argument("--no-llm", action="store_true",
+                    help="Disable Ollama-powered Markdown summaries/dashboards.")
     ap.add_argument("--auth-mode", default="session-cookie-env",
                     choices=["session-cookie-env", "browser-cookie"],
                     help="session-cookie-env (default): reads KIDSNOTE_SESSION_COOKIE "
@@ -516,6 +523,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="(--auth-mode browser-cookie only)")
     ap.add_argument("--child-id", type=int,
                     help="Pick a specific child id; defaults to the first one.")
+    ap.add_argument("--all-children", action="store_true",
+                    help="Process every child on the Kidsnote account. "
+                         "Currently intended for Markdown/Obsidian export.")
     ap.add_argument("--no-menus", action="store_true",
                     help="Skip daily lunch menu sync.")
     ap.add_argument("--no-notices", action="store_true",
@@ -533,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
                          "Notion page first (bypasses Report-ID dedup). Use "
                          "after prompt/LLM changes so old callouts get "
                          "regenerated. Sentinel dashboard pages are never "
-                         "touched by this — they're always replaced anyway.")
+                         "touched by this - they're always replaced anyway.")
     ap.add_argument("--dump-raw", action="store_true",
                     help="Dump the raw /reports/ JSON to backup_root for inspection. "
                          "Ignored when --no-local-save is set.")
@@ -545,11 +555,15 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
+    markdown_root = args.markdown_root or args.backup_root
+
     # Sanity: at least one output channel must be active.
     if not args.no_local_save and args.backup_root is None:
         sys.exit("--backup-root is required unless --no-local-save is set.")
-    if args.no_local_save and not args.publish_to_notion:
-        sys.exit("--no-local-save is only useful with --publish-to-notion.")
+    if args.export_markdown and markdown_root is None:
+        sys.exit("--export-markdown requires --markdown-root or --backup-root.")
+    if args.no_local_save and not args.publish_to_notion and not args.export_markdown:
+        sys.exit("--no-local-save requires another output mode such as --export-markdown.")
 
     env = _load_env_file(args.env_file) if args.env_file.exists() else {}
 
@@ -598,10 +612,136 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             sys.exit(f"Notion DB query failed: {e}")
 
+    # ---- Markdown / Obsidian export setup (if requested) -----
+    md_exporter = None
+    md_skip_ids: set[int] = set()
+    if args.export_markdown:
+        from markdown_exporter import MarkdownExporter  # local module
+        assert markdown_root is not None
+        md_exporter = MarkdownExporter(markdown_root, enable_llm=not args.no_llm)
+        if args.force_refresh:
+            _LOGGER.info("Markdown export: --force-refresh active, existing notes may be overwritten")
+        else:
+            md_skip_ids = md_exporter.existing_report_ids()
+            _LOGGER.info(
+                "Markdown export: %d existing report notes will be skipped", len(md_skip_ids),
+            )
+
     # ---- enumerate child + reports -----
     children = _list_children(sess)
     if not children:
         sys.exit("no children found on this account.")
+
+    if args.export_markdown and not args.publish_to_notion and args.all_children:
+        assert md_exporter is not None
+
+        def _reports_for_markdown_child(target_child: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+            child_reports = _list_reports(sess, int(target_child["id"]))
+            if args.monthly_sample:
+                seen_months: set[str] = set()
+                sampled: list[dict[str, Any]] = []
+                for r in child_reports:
+                    ym = (r.get("date_written") or "")[:7]
+                    if ym and ym not in seen_months:
+                        seen_months.add(ym)
+                        sampled.append(r)
+                child_reports = sampled
+            elif args.limit:
+                child_reports = child_reports[: args.limit]
+
+            _LOGGER.info(
+                "Markdown child=%s id=%s: fetched %d reports",
+                target_child.get("name"), target_child.get("id"), len(child_reports),
+            )
+
+            enriched_child_reports: list[dict[str, Any]] = []
+            for i, r in enumerate(child_reports, 1):
+                d = _fetch_report_detail(sess, int(r["id"])) or r
+                d.setdefault("child_name", target_child.get("name") or "")
+                enriched_child_reports.append(d)
+                if i % 5 == 0 or i == len(child_reports):
+                    _LOGGER.info(
+                        "  child=%s detail enrich %d/%d done",
+                        target_child.get("name"), i, len(child_reports),
+                    )
+
+            menus_for_child: dict[str, dict[str, Any]] = {}
+            enr_child = target_child.get("enrollment")
+            center_id_child: int | None = None
+            if isinstance(enr_child, list) and enr_child:
+                center_id_child = enr_child[0].get("center_id") or enr_child[0].get("center")
+            elif isinstance(enr_child, dict):
+                center_id_child = enr_child.get("center_id") or enr_child.get("center")
+            if not args.no_menus and center_id_child:
+                try:
+                    menus = _list_menus(sess, int(center_id_child))
+                    for m in menus:
+                        d = m.get("date_menu")
+                        if d:
+                            menus_for_child[d] = m
+                    _LOGGER.info(
+                        "Markdown child=%s: pre-loaded %d menus",
+                        target_child.get("name"), len(menus_for_child),
+                    )
+                except Exception as e:
+                    _LOGGER.warning("Markdown menu pre-fetch failed for child=%s: %s", target_child.get("name"), e)
+            return enriched_child_reports, menus_for_child
+
+        total_exported = 0
+        total_skipped = 0
+        for child in children:
+            reports_for_child, menus_for_child = _reports_for_markdown_child(child)
+            child_name = child.get("name") or ""
+            exported = 0
+            skipped = 0
+            for idx, detail in enumerate(reports_for_child, start=1):
+                rid = int(detail.get("id", 0))
+                if rid in md_skip_ids:
+                    skipped += 1
+                    continue
+                author_type = (detail.get("author") or {}).get("type") or ""
+                date_w = detail.get("date_written")
+                attached_menu = None
+                if author_type == "teacher" and date_w:
+                    attached_menu = menus_for_child.get(date_w)
+                try:
+                    res = md_exporter.export_report(
+                        detail, sess, attached_menu=attached_menu,
+                        force=args.force_refresh,
+                    )
+                    if not res.get("skipped"):
+                        exported += 1
+                    _LOGGER.info(
+                        "Markdown child=%s %5.1f%% (%d/%d) | id=%d images=%d files=%d",
+                        child_name,
+                        (idx / len(reports_for_child) * 100) if reports_for_child else 100.0,
+                        idx, len(reports_for_child), rid,
+                        res.get("images", 0), res.get("files", 0),
+                    )
+                except Exception as e:
+                    _LOGGER.warning("Markdown export FAILED child=%s id=%d: %s", child_name, rid, e)
+            total_exported += exported
+            total_skipped += skipped
+            if reports_for_child and (exported > 0 or args.force_refresh):
+                try:
+                    path = md_exporter.publish_growth_stories(reports_for_child, child_name)
+                    if path:
+                        _LOGGER.info("Markdown growth stories updated: %s", path)
+                except Exception as e:
+                    _LOGGER.warning("Markdown growth stories failed for child=%s: %s", child_name, e)
+                try:
+                    path = md_exporter.publish_milestones(reports_for_child, child_name)
+                    if path:
+                        _LOGGER.info("Markdown milestones updated: %s", path)
+                except Exception as e:
+                    _LOGGER.warning("Markdown milestones failed for child=%s: %s", child_name, e)
+
+        _LOGGER.info(
+            "Markdown all-children export DONE: %d new notes, %d already existed",
+            total_exported, total_skipped,
+        )
+        return 0
+
     if args.child_id:
         target = next((c for c in children if c.get("id") == args.child_id), None)
         if target is None:
@@ -635,11 +775,12 @@ def main(argv: list[str] | None = None) -> int:
     # the dashboard stats need fields that only the detail endpoint exposes
     # (meal_status / sleep_hour / weather / food / sleep / nursing / bowel).
     # 1 extra HTTP call per report, but skipping it would force two passes.
-    if mirror is not None and reports:
+    if (mirror is not None or md_exporter is not None) and reports:
         _LOGGER.info("enriching %d reports with detail API...", len(reports))
         enriched: list[dict[str, Any]] = []
         for i, r in enumerate(reports, 1):
             d = _fetch_report_detail(sess, int(r["id"])) or r
+            d.setdefault("child_name", target.get("name") or "")
             enriched.append(d)
             if i % 5 == 0 or i == len(reports):
                 _LOGGER.info("  detail enrich %d/%d done", i, len(reports))
@@ -746,7 +887,7 @@ def main(argv: list[str] | None = None) -> int:
     # ----- removed from the standalone-publish pool below.
     menus_for_match: dict[str, dict[str, Any]] = {}
     menus_fetched: list[dict[str, Any]] = []
-    if mirror is not None and not args.no_menus and center_id:
+    if (mirror is not None or md_exporter is not None) and not args.no_menus and center_id:
         try:
             # Always fetch the full menu set for date-matching, regardless
             # of --limit (otherwise a small limit could leave reports
@@ -782,6 +923,55 @@ def main(argv: list[str] | None = None) -> int:
             return mirror.publish_report(detail, sess_, attached_menu=attached_menu)
 
         _publish_batch(reports, _publish_report, "Report")
+
+    # ---- Markdown / Obsidian export: reports + selected LLM dashboards ----
+    md_export_results: list[dict[str, Any]] = []
+    if md_exporter is not None:
+        total = len(reports)
+        exported = 0
+        skipped = 0
+        for idx, detail in enumerate(reports, start=1):
+            rid = int(detail.get("id", 0))
+            if rid in md_skip_ids:
+                skipped += 1
+                continue
+            author_type = (detail.get("author") or {}).get("type") or ""
+            date_w = detail.get("date_written")
+            attached_menu = None
+            if author_type == "teacher" and date_w:
+                attached_menu = menus_for_match.get(date_w)
+            try:
+                res = md_exporter.export_report(
+                    detail, sess, attached_menu=attached_menu,
+                    force=args.force_refresh,
+                )
+                md_export_results.append(res)
+                if not res.get("skipped"):
+                    exported += 1
+                _LOGGER.info(
+                    "Markdown %5.1f%% (%d/%d) | id=%d images=%d files=%d",
+                    (idx / total * 100) if total else 100.0,
+                    idx, total, rid, res.get("images", 0), res.get("files", 0),
+                )
+            except Exception as e:
+                _LOGGER.warning("Markdown export FAILED id=%d: %s", rid, e)
+        _LOGGER.info(
+            "Markdown export DONE: %d new notes, %d already existed",
+            exported, skipped,
+        )
+        if reports and (exported > 0 or args.force_refresh):
+            try:
+                path = md_exporter.publish_growth_stories(reports)
+                if path:
+                    _LOGGER.info("Markdown growth stories updated: %s", path)
+            except Exception as e:
+                _LOGGER.warning("Markdown growth stories failed: %s", e)
+            try:
+                path = md_exporter.publish_milestones(reports)
+                if path:
+                    _LOGGER.info("Markdown milestones updated: %s", path)
+            except Exception as e:
+                _LOGGER.warning("Markdown milestones failed: %s", e)
 
     # ---- Notion mirror: notices (center-wide) -----
     if mirror is not None and not args.no_notices and center_id:
