@@ -40,7 +40,7 @@ concurrency:
 jobs:
   export:
     runs-on: ubuntu-latest
-    timeout-minutes: 720
+    timeout-minutes: 360
 
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +112,7 @@ jobs:
         with:
           name: kidsnote-obsidian-export
           path: obsidian-export
-          retention-days: 30
+          retention-days: 32
 
       - name: Save export cache
         if: always()

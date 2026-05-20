@@ -700,6 +700,13 @@ def main(argv: list[str] | None = None) -> int:
             exported = 0
             skipped = 0
             for idx, detail in enumerate(reports_for_child, start=1):
+                if _remaining_budget() < DASHBOARD_RESERVE_SEC:
+                    _LOGGER.warning(
+                        "Markdown child=%s: time budget reached at %d/%d reports, "
+                        "stopping early. Next workflow run will resume via frontmatter dedup.",
+                        child_name, idx - 1, len(reports_for_child),
+                    )
+                    break
                 rid = int(detail.get("id", 0))
                 if rid in md_skip_ids:
                     skipped += 1
@@ -752,7 +759,14 @@ def main(argv: list[str] | None = None) -> int:
                         "Markdown child=%s: fetched %d notices",
                         child_name, len(notices_for_child),
                     )
-                    for notice in notices_for_child:
+                    for idx, notice in enumerate(notices_for_child, start=1):
+                        if _remaining_budget() < DASHBOARD_RESERVE_SEC:
+                            _LOGGER.warning(
+                                "Markdown child=%s: time budget reached at %d/%d notices, "
+                                "stopping early. Next workflow run will resume via frontmatter dedup.",
+                                child_name, idx - 1, len(notices_for_child),
+                            )
+                            break
                         try:
                             res = md_exporter.export_notice(
                                 notice, sess, child_name=child_name,
