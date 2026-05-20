@@ -17,7 +17,7 @@ htmlcov/
 .mypy_cache/
 
 # --- Secrets ---
-# NEVER commit WordPress passwords, Notion tokens, LLM API keys.
+# NEVER commit Kidsnote session cookies or local API keys.
 .env
 .env.local
 .env.*.local

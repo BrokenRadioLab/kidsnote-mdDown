@@ -292,13 +292,17 @@ KIDSNOTE_SESSION_COOKIE       Updated now
 | Add secret 후 목록에 없음 | 이름에 공백 또는 특수문자가 들어갔을 수 있습니다. 다시 등록합니다. |
 | 이전에 만든 다른 Secret이 있음 | `KIDSNOTE_SESSION_COOKIE`가 정확히 있으면 다른 Secret은 이 workflow에서 사용하지 않습니다. |
 
-로컬에서 실행하려면 repository root에 `.env` 파일을 만들고 아래처럼 저장합니다.
+### 5-5. 로컬에서 실행하려면
+
+GitHub Actions가 아니라 내 PC에서 증분 백업을 실행하려면 repository root에 `.env` 파일을 만들고
+아래처럼 저장합니다.
 
 ```env
 KIDSNOTE_SESSION_COOKIE=your_sessionid_value_here
 ```
 
-`.env` 파일은 절대 commit하지 마세요.
+이 값은 4단계에서 복사한 `sessionid` 쿠키 값입니다. `.env` 파일은 절대 commit하지 마세요.
+이 repository의 `.gitignore`에는 `.env`가 포함되어 있어서 정상적으로는 Git에 올라가지 않습니다.
 
 ## 6. GitHub Actions로 첫 대량 백업하기
 
