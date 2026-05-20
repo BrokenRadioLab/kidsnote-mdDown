@@ -27,7 +27,8 @@ on:
         type: choice
         options: ["false", "true"]
   schedule:
-    - cron: "15 */4 * * *"
+    # GitHub cron is UTC. This runs once a day at 23:00 KST.
+    - cron: "0 14 * * *"
 
 permissions:
   contents: read

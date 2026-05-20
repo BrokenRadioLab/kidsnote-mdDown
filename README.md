@@ -167,6 +167,9 @@ workflow가 완료되면 artifact가 생성됩니다.
 kidsnote-obsidian-export
 ```
 
+이 workflow는 기본적으로 하루 한 번, 한국 시간 오후 11시에 자동 실행됩니다.
+필요할 때는 `Actions` 탭에서 수동으로 실행할 수도 있습니다.
+
 artifact를 다운로드하고 압축을 푼 뒤, 아이별 폴더를 아래 경로에 복사합니다.
 
 ```text
