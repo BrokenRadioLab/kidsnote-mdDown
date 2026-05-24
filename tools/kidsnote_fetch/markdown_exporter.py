@@ -47,9 +47,9 @@ WEATHER_DISPLAY = {
 }
 
 AUTHOR_FILE_LABELS = {
-    "teacher": "교사알림장",
-    "parent": "부모알림장",
-    "admin": "공지알림장",
+    "teacher": "[교사]_알림장",
+    "parent": "[부모]_알림장",
+    "admin": "[공지]_알림장",
 }
 
 
